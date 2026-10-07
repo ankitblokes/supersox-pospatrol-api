@@ -2,17 +2,24 @@ require("dotenv").config();
 const express = require("express");
 
 const app = express();
+
 const E = process.env;
+
 const PORT = E.PORT || 3000;
-const API_VERSION = E.SHOPIFY_API_VERSION || "2025-10";
+const API_VERSION = E.SHOPIFY_API_VERSION || "2025-07";
+
 const CUR = E.CURRENCY_CODE || "INR";
 const FX = E.EXCHANGE_RATE || "1";
+
 const TERMINAL = E.DEFAULT_TERMINAL_ID || "01";
 const SHIFT = E.DEFAULT_SHIFT_NO || "01";
 const DEFAULT_LOC = E.DEFAULT_LOCATION_CODE || "01";
 const SOURCE = E.SOURCE_NAME || "pos";
 
+// ---------- LOCATION CONFIG ----------
+
 let LOCATION_MAP = {};
+
 try {
   LOCATION_MAP = JSON.parse(E.LOCATION_MAP || "{}");
 } catch {
@@ -25,6 +32,8 @@ const ONLY_LOCATIONS = (E.ONLY_LOCATIONS || "")
   .map(s => s.trim())
   .filter(Boolean);
 
+// ---------- REQUIRED ENV ----------
+
 for (const k of [
   "SHOPIFY_STORE_DOMAIN",
   "SHOPIFY_ADMIN_ACCESS_TOKEN",
@@ -36,7 +45,8 @@ for (const k of [
   }
 }
 
-// ---------- helpers ----------
+// ---------- HELPERS ----------
+
 const num = v => {
   const n = Number(v);
   return Number.isNaN(n) ? 0 : n;
@@ -44,32 +54,54 @@ const num = v => {
 
 const money = v => num(v).toFixed(2);
 
-const amt = set => num(set?.shopMoney?.amount);
+const amt = set =>
+  num(set?.shopMoney?.amount);
 
-const IST_MS = 5.5 * 3600 * 1000;
+const IST_MS = 5.5 * 60 * 60 * 1000;
 
 function ist(iso) {
-  const d = new Date(new Date(iso).getTime() + IST_MS);
-  const p = n => String(n).padStart(2, "0");
+  const d = new Date(
+    new Date(iso).getTime() + IST_MS
+  );
+
+  const p = n =>
+    String(n).padStart(2, "0");
 
   return {
-    date: `${d.getUTCFullYear()}${p(d.getUTCMonth() + 1)}${p(d.getUTCDate())}`,
-    time: `${p(d.getUTCHours())}${p(d.getUTCMinutes())}${p(d.getUTCSeconds())}`
+    date:
+      `${d.getUTCFullYear()}` +
+      `${p(d.getUTCMonth() + 1)}` +
+      `${p(d.getUTCDate())}`,
+
+    time:
+      `${p(d.getUTCHours())}` +
+      `${p(d.getUTCMinutes())}` +
+      `${p(d.getUTCSeconds())}`
   };
 }
 
-const isDate = v => /^\d{4}-\d{2}-\d{2}$/.test(v || "");
+const isDate = v =>
+  /^\d{4}-\d{2}-\d{2}$/.test(v || "");
 
 const fromMs = d =>
-  new Date(`${d}T00:00:00+05:30`).getTime();
+  new Date(
+    `${d}T00:00:00+05:30`
+  ).getTime();
 
 const toMs = d =>
-  new Date(`${d}T23:59:59.999+05:30`).getTime();
+  new Date(
+    `${d}T23:59:59.999+05:30`
+  ).getTime();
+
+// ---------- PAYMENT MAPPING ----------
 
 function payName(gateway) {
-  const v = String(gateway || "").toLowerCase();
+  const v =
+    String(gateway || "").toLowerCase();
 
-  if (v.includes("cash")) return "CASH";
+  if (v.includes("cash")) {
+    return "CASH";
+  }
 
   if (
     /card|visa|master|credit|debit|pos_card|swipe/.test(v)
@@ -86,37 +118,47 @@ function payName(gateway) {
   return "OTHERS";
 }
 
-// ---------- Shopify ----------
+// ---------- SHOPIFY GRAPHQL ----------
+
 async function gql(query, variables) {
-  const res = await fetch(
-    `https://${E.SHOPIFY_STORE_DOMAIN}/admin/api/${API_VERSION}/graphql.json`,
-    {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "X-Shopify-Access-Token": E.SHOPIFY_ADMIN_ACCESS_TOKEN
-      },
-      body: JSON.stringify({
-        query,
-        variables
-      })
-    }
-  );
+  const url =
+    `https://${E.SHOPIFY_STORE_DOMAIN}` +
+    `/admin/api/${API_VERSION}/graphql.json`;
+
+  const res = await fetch(url, {
+    method: "POST",
+
+    headers: {
+      "Content-Type": "application/json",
+      "X-Shopify-Access-Token":
+        E.SHOPIFY_ADMIN_ACCESS_TOKEN
+    },
+
+    body: JSON.stringify({
+      query,
+      variables
+    })
+  });
 
   const text = await res.text();
 
   if (!res.ok) {
-    throw new Error(`Shopify HTTP ${res.status}: ${text}`);
+    throw new Error(
+      `Shopify HTTP ${res.status}: ${text}`
+    );
   }
 
   const json = JSON.parse(text);
 
   if (json.errors) {
-    const throttled =
-      JSON.stringify(json.errors).includes("THROTTLED");
+    const errorText =
+      JSON.stringify(json.errors);
 
-    if (throttled) {
-      await new Promise(r => setTimeout(r, 2000));
+    if (errorText.includes("THROTTLED")) {
+      await new Promise(resolve =>
+        setTimeout(resolve, 2000)
+      );
+
       return gql(query, variables);
     }
 
@@ -129,22 +171,30 @@ async function gql(query, variables) {
   return json.data;
 }
 
-const MONEY = "shopMoney { amount currencyCode }";
+// ---------- MONEY ----------
+
+const MONEY =
+  "shopMoney { amount currencyCode }";
+
+// ---------- ORDERS QUERY ----------
 
 const ORDERS_QUERY = `
 query Orders($q: String!, $cursor: String) {
+
   orders(
     first: 50
     after: $cursor
     query: $q
     sortKey: UPDATED_AT
   ) {
+
     pageInfo {
       hasNextPage
       endCursor
     }
 
     nodes {
+
       id
       name
       createdAt
@@ -168,20 +218,26 @@ query Orders($q: String!, $cursor: String) {
         ${MONEY}
       }
 
+      # IMPORTANT:
+      # Order transactions are direct objects
+      # in this Shopify schema.
+
       transactions(first: 50) {
-        nodes {
-          kind
-          status
-          gateway
-          processedAt
-          amountSet {
-            ${MONEY}
-          }
+
+        kind
+        status
+        gateway
+        processedAt
+
+        amountSet {
+          ${MONEY}
         }
       }
 
       lineItems(first: 100) {
+
         nodes {
+
           id
           name
           title
@@ -201,13 +257,16 @@ query Orders($q: String!, $cursor: String) {
           }
 
           taxLines {
+
             priceSet {
               ${MONEY}
             }
           }
 
           variant {
+
             sku
+
             product {
               productType
             }
@@ -216,6 +275,7 @@ query Orders($q: String!, $cursor: String) {
       }
 
       refunds {
+
         id
         createdAt
 
@@ -223,11 +283,18 @@ query Orders($q: String!, $cursor: String) {
           ${MONEY}
         }
 
+        # IMPORTANT:
+        # Refund transactions are a connection
+        # in this Shopify schema.
+
         transactions(first: 20) {
+
           nodes {
+
             kind
             status
             gateway
+
             amountSet {
               ${MONEY}
             }
@@ -235,7 +302,9 @@ query Orders($q: String!, $cursor: String) {
         }
 
         refundLineItems(first: 100) {
+
           nodes {
+
             quantity
 
             subtotalSet {
@@ -247,6 +316,7 @@ query Orders($q: String!, $cursor: String) {
             }
 
             lineItem {
+
               id
               name
               title
@@ -257,7 +327,9 @@ query Orders($q: String!, $cursor: String) {
               }
 
               variant {
+
                 sku
+
                 product {
                   productType
                 }
@@ -271,18 +343,21 @@ query Orders($q: String!, $cursor: String) {
 }
 `;
 
+// ---------- FETCH ORDERS ----------
+
 async function fetchOrders(from, to) {
-  // Pad updated_at window by 1 day on both sides.
-  // Exact filtering is done later in build().
+
   const pad = 86400000;
 
-  const lo = new Date(
-    fromMs(from) - pad
-  ).toISOString();
+  const lo =
+    new Date(
+      fromMs(from) - pad
+    ).toISOString();
 
-  const hi = new Date(
-    toMs(to) + pad
-  ).toISOString();
+  const hi =
+    new Date(
+      toMs(to) + pad
+    ).toISOString();
 
   const q =
     `source_name:${SOURCE} ` +
@@ -290,32 +365,43 @@ async function fetchOrders(from, to) {
     `updated_at:<=${hi}`;
 
   const out = [];
+
   let cursor = null;
 
   for (;;) {
-    const d = await gql(
-      ORDERS_QUERY,
-      {
-        q,
-        cursor
-      }
+
+    const data =
+      await gql(
+        ORDERS_QUERY,
+        {
+          q,
+          cursor
+        }
+      );
+
+    out.push(
+      ...data.orders.nodes
     );
 
-    out.push(...d.orders.nodes);
-
-    if (!d.orders.pageInfo.hasNextPage) {
+    if (
+      !data.orders.pageInfo.hasNextPage
+    ) {
       break;
     }
 
-    cursor = d.orders.pageInfo.endCursor;
+    cursor =
+      data.orders.pageInfo.endCursor;
   }
 
   return out;
 }
 
-// ---------- mapping ----------
+// ---------- LOCATION ----------
+
 function locCode(order) {
-  const id = order.retailLocation?.id;
+
+  const id =
+    order.retailLocation?.id;
 
   return (
     (id && LOCATION_MAP[id]) ||
@@ -324,6 +410,7 @@ function locCode(order) {
 }
 
 function locAllowed(order) {
+
   if (!ONLY_LOCATIONS.length) {
     return true;
   }
@@ -333,35 +420,76 @@ function locAllowed(order) {
   );
 }
 
-const rcpt = order =>
-  String(order.name || "").replace("#", "");
+// ---------- RECEIPT ----------
 
-function base(order, rcptNum, iso) {
+const rcpt = order =>
+  String(order.name || "")
+    .replace("#", "");
+
+// ---------- BASE ----------
+
+function base(
+  order,
+  rcptNum,
+  iso
+) {
+
   const t = ist(iso);
 
   return {
+
     head: {
-      LOCATION_CODE: locCode(order),
-      TERMINAL_ID: TERMINAL,
-      SHIFT_NO: SHIFT,
-      RCPT_NUM: rcptNum,
-      RCPT_DT: t.date,
-      BUSINESS_DT: t.date,
-      RCPT_TM: t.time
+
+      LOCATION_CODE:
+        locCode(order),
+
+      TERMINAL_ID:
+        TERMINAL,
+
+      SHIFT_NO:
+        SHIFT,
+
+      RCPT_NUM:
+        rcptNum,
+
+      RCPT_DT:
+        t.date,
+
+      BUSINESS_DT:
+        t.date,
+
+      RCPT_TM:
+        t.time
     },
 
     key: {
-      LOCATION_CODE: locCode(order),
-      TERMINAL_ID: TERMINAL,
-      SHIFT_NO: SHIFT,
-      RCPT_NUM: rcptNum,
-      RCPT_DT: t.date
+
+      LOCATION_CODE:
+        locCode(order),
+
+      TERMINAL_ID:
+        TERMINAL,
+
+      SHIFT_NO:
+        SHIFT,
+
+      RCPT_NUM:
+        rcptNum,
+
+      RCPT_DT:
+        t.date
     }
   };
 }
 
-// ---------- build response ----------
-function build(orders, from, to) {
+// ---------- BUILD RESPONSE ----------
+
+function build(
+  orders,
+  from,
+  to
+) {
+
   const Transactions = [];
   const ItemDetail = [];
   const PaymentDetail = [];
@@ -370,66 +498,111 @@ function build(orders, from, to) {
   const hi = toMs(to);
 
   const inRange = iso => {
-    const t = new Date(iso).getTime();
 
-    return t >= lo && t <= hi;
+    if (!iso) {
+      return false;
+    }
+
+    const t =
+      new Date(iso).getTime();
+
+    return (
+      t >= lo &&
+      t <= hi
+    );
   };
 
   for (const order of orders) {
+
     if (!locAllowed(order)) {
       continue;
     }
 
-    const cur = order.currencyCode || CUR;
+    const cur =
+      order.currencyCode || CUR;
+
     const saleIso =
       order.processedAt ||
       order.createdAt;
 
-    // --------------------------------
+    // ==========================================
     // SALES
-    // --------------------------------
-    if (inRange(saleIso)) {
-      const r = rcpt(order);
+    // ==========================================
 
-      const { head, key } =
-        base(order, r, saleIso);
+    if (inRange(saleIso)) {
+
+      const r =
+        rcpt(order);
+
+      const {
+        head,
+        key
+      } =
+        base(
+          order,
+          r,
+          saleIso
+        );
 
       Transactions.push({
+
         ...head,
 
-        INV_AMT: money(
-          amt(order.totalPriceSet)
-        ),
+        INV_AMT:
+          money(
+            amt(
+              order.totalPriceSet
+            )
+          ),
 
-        TAX_AMT: money(
-          amt(order.totalTaxSet)
-        ),
+        TAX_AMT:
+          money(
+            amt(
+              order.totalTaxSet
+            )
+          ),
 
-        RET_AMT: "0.00",
+        RET_AMT:
+          "0.00",
 
-        TRAN_STATUS: "SALES",
+        TRAN_STATUS:
+          "SALES",
 
-        OP_CUR: cur,
-        BC_EXCH: FX,
+        OP_CUR:
+          cur,
 
-        DISCOUNT: money(
-          amt(order.totalDiscountsSet)
-        )
+        BC_EXCH:
+          FX,
+
+        DISCOUNT:
+          money(
+            amt(
+              order.totalDiscountsSet
+            )
+          )
       });
 
-      // Item details
+      // ----------------------------------------
+      // SALES ITEMS
+      // ----------------------------------------
+
       for (
         const li of
-        order.lineItems.nodes
+        order.lineItems?.nodes || []
       ) {
+
         const tax =
-          li.taxLines.reduce(
-            (s, t) =>
-              s + amt(t.priceSet),
+          (
+            li.taxLines || []
+          ).reduce(
+            (sum, t) =>
+              sum +
+              amt(t.priceSet),
             0
           );
 
         ItemDetail.push({
+
           ...key,
 
           ITEM_CODE:
@@ -442,7 +615,9 @@ function build(orders, from, to) {
             li.title,
 
           ITEM_QTY:
-            String(li.quantity),
+            String(
+              li.quantity
+            ),
 
           ITEM_PRICE:
             money(
@@ -452,14 +627,16 @@ function build(orders, from, to) {
             ),
 
           ITEM_CAT:
-            li.variant?.product
+            li.variant
+              ?.product
               ?.productType ||
             "OTHER",
 
           ITEM_TAX:
             money(tax),
 
-          ITEM_TAX_TYPE: "I",
+          ITEM_TAX_TYPE:
+            "I",
 
           ITEM_NET_AMT:
             money(
@@ -468,10 +645,14 @@ function build(orders, from, to) {
               )
             ),
 
-          OP_CUR: cur,
-          BC_EXCH: FX,
+          OP_CUR:
+            cur,
 
-          ITEM_STATUS: "SALES",
+          BC_EXCH:
+            FX,
+
+          ITEM_STATUS:
+            "SALES",
 
           ITEM_DISCOUNT:
             money(
@@ -482,196 +663,292 @@ function build(orders, from, to) {
         });
       }
 
-      // Payment details
+      // ----------------------------------------
+      // SALES PAYMENTS
+      // ----------------------------------------
+
       for (
         const tr of
-        (order.transactions?.nodes || [])
+        order.transactions || []
       ) {
+
         if (
-          tr.status !== "SUCCESS" ||
-          !["SALE", "CAPTURE"].includes(
-            tr.kind
-          )
+          tr.status !== "SUCCESS"
+        ) {
+          continue;
+        }
+
+        if (
+          ![
+            "SALE",
+            "CAPTURE"
+          ].includes(tr.kind)
         ) {
           continue;
         }
 
         PaymentDetail.push({
+
           ...key,
 
           PAYMENT_NAME:
-            payName(tr.gateway),
+            payName(
+              tr.gateway
+            ),
 
-          CURRENCY_CODE: cur,
-          EXCHANGE_RATE: FX,
+          CURRENCY_CODE:
+            cur,
+
+          EXCHANGE_RATE:
+            FX,
 
           TENDER_AMOUNT:
             money(
-              amt(tr.amountSet)
+              amt(
+                tr.amountSet
+              )
             ),
 
-          OP_CUR: cur,
-          BC_EXCH: FX,
+          OP_CUR:
+            cur,
 
-          PAYMENT_STATUS: "SALES"
+          BC_EXCH:
+            FX,
+
+          PAYMENT_STATUS:
+            "SALES"
         });
       }
     }
 
-    // --------------------------------
+    // ==========================================
     // RETURNS
-    // --------------------------------
-    order.refunds.forEach(
-      (rf, i) => {
-        if (!inRange(rf.createdAt)) {
-          return;
-        }
+    // ==========================================
 
-        const r =
-          `${rcpt(order)}-R${i + 1}`;
+    for (
+      const [i, rf] of
+      (order.refunds || []).entries()
+    ) {
 
-        const { head, key } =
-          base(
-            order,
-            r,
-            rf.createdAt
-          );
-
-        const retTax =
-          rf.refundLineItems.nodes.reduce(
-            (s, n) =>
-              s + amt(n.totalTaxSet),
-            0
-          );
-
-        const retAmt =
-          amt(rf.totalRefundedSet);
-
-        Transactions.push({
-          ...head,
-
-          INV_AMT: "0.00",
-
-          TAX_AMT:
-            money(retTax),
-
-          RET_AMT:
-            money(retAmt),
-
-          TRAN_STATUS: "RETURN",
-
-          OP_CUR: cur,
-          BC_EXCH: FX,
-
-          DISCOUNT: "0.00"
-        });
-
-        // Return items
-        for (
-          const n of
-          rf.refundLineItems.nodes
-        ) {
-          const li = n.lineItem;
-
-          ItemDetail.push({
-            ...key,
-
-            ITEM_CODE:
-              li.sku ||
-              li.variant?.sku ||
-              li.id,
-
-            ITEM_NAME:
-              li.name ||
-              li.title,
-
-            ITEM_QTY:
-              String(
-                -Math.abs(n.quantity)
-              ),
-
-            ITEM_PRICE:
-              money(
-                amt(
-                  li.originalUnitPriceSet
-                )
-              ),
-
-            ITEM_CAT:
-              li.variant?.product
-                ?.productType ||
-              "OTHER",
-
-            ITEM_TAX:
-              money(
-                amt(n.totalTaxSet)
-              ),
-
-            ITEM_TAX_TYPE: "I",
-
-            ITEM_NET_AMT:
-              money(
-                -Math.abs(
-                  amt(n.subtotalSet)
-                )
-              ),
-
-            OP_CUR: cur,
-            BC_EXCH: FX,
-
-            ITEM_STATUS: "RETURN",
-
-            ITEM_DISCOUNT: "0.00"
-          });
-        }
-
-        // Return payments
-        for (
-          const tr of
-          (rf.transactions?.nodes || [])
-        ) {
-          if (
-            tr.status !== "SUCCESS" ||
-            tr.kind !== "REFUND"
-          ) {
-            continue;
-          }
-
-          PaymentDetail.push({
-            ...key,
-
-            PAYMENT_NAME:
-              payName(tr.gateway),
-
-            CURRENCY_CODE: cur,
-            EXCHANGE_RATE: FX,
-
-            TENDER_AMOUNT:
-              money(
-                -Math.abs(
-                  amt(tr.amountSet)
-                )
-              ),
-
-            OP_CUR: cur,
-            BC_EXCH: FX,
-
-            PAYMENT_STATUS: "RETURN"
-          });
-        }
+      if (
+        !inRange(
+          rf.createdAt
+        )
+      ) {
+        continue;
       }
-    );
+
+      const r =
+        `${rcpt(order)}-R${i + 1}`;
+
+      const {
+        head,
+        key
+      } =
+        base(
+          order,
+          r,
+          rf.createdAt
+        );
+
+      const retTax =
+        (
+          rf.refundLineItems
+            ?.nodes || []
+        ).reduce(
+          (sum, n) =>
+            sum +
+            amt(
+              n.totalTaxSet
+            ),
+          0
+        );
+
+      const retAmt =
+        amt(
+          rf.totalRefundedSet
+        );
+
+      Transactions.push({
+
+        ...head,
+
+        INV_AMT:
+          "0.00",
+
+        TAX_AMT:
+          money(retTax),
+
+        RET_AMT:
+          money(retAmt),
+
+        TRAN_STATUS:
+          "RETURN",
+
+        OP_CUR:
+          cur,
+
+        BC_EXCH:
+          FX,
+
+        DISCOUNT:
+          "0.00"
+      });
+
+      // ----------------------------------------
+      // RETURN ITEMS
+      // ----------------------------------------
+
+      for (
+        const n of
+        rf.refundLineItems?.nodes || []
+      ) {
+
+        const li =
+          n.lineItem;
+
+        ItemDetail.push({
+
+          ...key,
+
+          ITEM_CODE:
+            li.sku ||
+            li.variant?.sku ||
+            li.id,
+
+          ITEM_NAME:
+            li.name ||
+            li.title,
+
+          ITEM_QTY:
+            String(
+              -Math.abs(
+                n.quantity
+              )
+            ),
+
+          ITEM_PRICE:
+            money(
+              amt(
+                li.originalUnitPriceSet
+              )
+            ),
+
+          ITEM_CAT:
+            li.variant
+              ?.product
+              ?.productType ||
+            "OTHER",
+
+          ITEM_TAX:
+            money(
+              amt(
+                n.totalTaxSet
+              )
+            ),
+
+          ITEM_TAX_TYPE:
+            "I",
+
+          ITEM_NET_AMT:
+            money(
+              -Math.abs(
+                amt(
+                  n.subtotalSet
+                )
+              )
+            ),
+
+          OP_CUR:
+            cur,
+
+          BC_EXCH:
+            FX,
+
+          ITEM_STATUS:
+            "RETURN",
+
+          ITEM_DISCOUNT:
+            "0.00"
+        });
+      }
+
+      // ----------------------------------------
+      // RETURN PAYMENTS
+      // ----------------------------------------
+
+      for (
+        const tr of
+        rf.transactions?.nodes || []
+      ) {
+
+        if (
+          tr.status !== "SUCCESS"
+        ) {
+          continue;
+        }
+
+        if (
+          tr.kind !== "REFUND"
+        ) {
+          continue;
+        }
+
+        PaymentDetail.push({
+
+          ...key,
+
+          PAYMENT_NAME:
+            payName(
+              tr.gateway
+            ),
+
+          CURRENCY_CODE:
+            cur,
+
+          EXCHANGE_RATE:
+            FX,
+
+          TENDER_AMOUNT:
+            money(
+              -Math.abs(
+                amt(
+                  tr.amountSet
+                )
+              )
+            ),
+
+          OP_CUR:
+            cur,
+
+          BC_EXCH:
+            FX,
+
+          PAYMENT_STATUS:
+            "RETURN"
+        });
+      }
+    }
   }
 
   return {
+
     Transactions,
+
     ItemDetail,
+
     PaymentDetail
   };
 }
 
-// ---------- routes ----------
-function auth(req, res, next) {
+// ---------- AUTH ----------
+
+function auth(
+  req,
+  res,
+  next
+) {
+
   const k =
     req.headers["x-api-key"] ||
     req.query.api_key;
@@ -680,74 +957,97 @@ function auth(req, res, next) {
     !k ||
     k !== E.POSPATROL_API_KEY
   ) {
+
     return res
       .status(401)
       .json({
-        error: "Unauthorized"
+        error:
+          "Unauthorized"
       });
   }
 
   next();
 }
 
+// ---------- HEALTH ----------
+
 app.get(
   "/health",
   (_req, res) => {
+
     res.json({
-      status: "OK",
-      time: new Date().toISOString()
+
+      status:
+        "OK",
+
+      time:
+        new Date().toISOString()
     });
   }
 );
+
+// ---------- POSPATROL API ----------
 
 app.get(
   "/pospatrol/transactions",
   auth,
   async (req, res) => {
-    const { from, to } =
-      req.query;
+
+    const {
+      from,
+      to
+    } = req.query;
 
     if (
       !isDate(from) ||
       !isDate(to)
     ) {
+
       return res
         .status(400)
         .json({
+
           error:
             "from & to required, format YYYY-MM-DD"
         });
     }
 
     if (from > to) {
+
       return res
         .status(400)
         .json({
+
           error:
             "'from' cannot be after 'to'"
         });
     }
 
     try {
+
       const orders =
         await fetchOrders(
           from,
           to
         );
 
-      res.json(
+      const result =
         build(
           orders,
           from,
           to
-        )
-      );
+        );
+
+      res.json(result);
+
     } catch (err) {
+
       console.error(err);
 
       res
         .status(500)
         .json({
+
           error:
             "Unable to fetch transaction data",
 
@@ -758,10 +1058,14 @@ app.get(
   }
 );
 
+// ---------- START SERVER ----------
+
 app.listen(
   PORT,
-  () =>
+  () => {
+
     console.log(
       `POSPatrol API running on :${PORT}`
-    )
+    );
+  }
 );
