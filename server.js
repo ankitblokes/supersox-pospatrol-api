@@ -490,7 +490,12 @@ function auth(req, res, next) {
 
 // ---------- HEALTH ----------
 app.get("/health", (_req, res) => {
-  res.json({ status: "OK", time: new Date().toISOString() });
+  res.json({
+    status: "OK",
+    build: "2026-10-08-c",
+    hasDebugRoute: true,
+    time: new Date().toISOString()
+  });
 });
 
 // ---------- POSPATROL API ----------
