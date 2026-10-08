@@ -130,7 +130,6 @@ query Orders($q: String!, $cursor: String) {
       transactions(first: 50) {
         kind
         status
-        statusV2
         gateway
         processedAt
         amountSet { ${MONEY} }
