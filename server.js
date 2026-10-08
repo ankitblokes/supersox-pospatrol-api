@@ -364,9 +364,11 @@ function build(orders, from, to) {
 
       // Fallback: transactions did not match but order shows received amount
       if (paid === 0) {
-        const received = amt(order.totalReceivedSet) || amt(order.totalPriceSet);
-        const gw = (order.paymentGatewayNames || [])[0];
-        if (received > 0 && gw) {
+        const PAID = ["PAID", "PARTIALLY_PAID", "PARTIALLY_REFUNDED", "REFUNDED"];
+        const isPaid = PAID.includes(String(order.displayFinancialStatus));
+        const received = amt(order.totalReceivedSet) || (isPaid ? amt(order.totalPriceSet) : 0);
+        const gw = (order.paymentGatewayNames || [])[0] || "";
+        if (received > 0) {
           PaymentDetail.push({
             ...key,
             PAYMENT_NAME: payName(gw),
@@ -514,7 +516,33 @@ app.get("/pospatrol/transactions", auth, async (req, res) => {
   }
 });
 
-// ---------- START SERVER ----------
-app.listen(PORT, () => {
-  console.log(`POSPatrol API running on :${PORT}`);
+// ---------- DEBUG (remove before go-live) ----------
+app.get("/pospatrol/debug", auth, async (req, res) => {
+  const { from, to } = req.query;
+  if (!isDate(from) || !isDate(to)) {
+    return res.status(400).json({ error: "from & to required" });
+  }
+  try {
+    const orders = await fetchOrders(from, to);
+    res.json(orders.map(o => ({
+      name: o.name,
+      financialStatus: o.displayFinancialStatus,
+      gateways: o.paymentGatewayNames,
+      totalReceived: o.totalReceivedSet?.shopMoney?.amount,
+      totalPrice: o.totalPriceSet?.shopMoney?.amount,
+      transactions: o.transactions
+    })));
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
+
+// ---------- START SERVER ----------
+// Vercel: export the app. Local: listen on PORT.
+if (require.main === module) {
+  app.listen(PORT, () => {
+    console.log(`POSPatrol API running on :${PORT}`);
+  });
+}
+
+module.exports = app;
