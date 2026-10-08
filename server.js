@@ -64,7 +64,7 @@ const toMs = d => new Date(`${d}T23:59:59.999+05:30`).getTime();
 function payName(gateway) {
   const v = String(gateway || "").toLowerCase();
   if (v.includes("cash")) return "CASH";
-  if (/card|visa|master|credit|debit|pos_card|swipe|razorpay|shopify_payments/.test(v)) return "CARD";
+  if (/card|visa|master|credit|debit|pos_card|swipe|edc|razorpay|shopify_payments/.test(v)) return "CARD";
   if (/wallet|paytm|phonepe|gpay|google|upi/.test(v)) return "WALLET";
   return "OTHERS";
 }
@@ -531,6 +531,8 @@ app.get("/pospatrol/debug", auth, async (req, res) => {
     const orders = await fetchOrders(from, to);
     res.json(orders.map(o => ({
       name: o.name,
+      location: o.retailLocation?.name,
+      locationId: o.retailLocation?.id,
       financialStatus: o.displayFinancialStatus,
       gateways: o.paymentGatewayNames,
       totalReceived: o.totalReceivedSet?.shopMoney?.amount,
